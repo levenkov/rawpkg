@@ -1,0 +1,290 @@
+#!/bin/bash
+# Author: Levenkov A. Artem
+# E-mail: artem@levenkov.org
+# Git repo: http://github.com/mcs51/rawpkg.git
+# (c) 2016 Artem A. Levenkov
+
+version=0.1.42
+
+tmpfiles=''
+
+do-clean() {
+  rm -rf ${tmpfiles}
+}
+
+msg-exit() {
+  local err=$1
+  shift
+  echo -e "$@"
+  do-clean
+  exit "${err}"
+}
+
+msg-usage-exit() {
+  local err=$1
+  shift
+  echo -e "$@"
+  usage-exit "${err}"
+}
+
+usage-exit() {
+  usage
+  do-clean
+  exit "$1"
+}
+
+usage() {
+  echo -e \
+"rawpkg $version\n\
+Usage: $0 <command> [command-options]\n\
+Commands are: create (c), install (i), uninstall (u, remove), list, help"
+}
+
+AR='xz'
+
+ar-ext() {
+  eval "echo \${AREXT_${AR}}"
+}
+
+ar-c() {
+  eval "ar-c-${AR} $@"
+}
+
+ar-u() {
+  eval "ar-u-${AR} $@"
+}
+
+ar-l() {
+  eval "ar-l-${AR} $@"
+}
+
+AREXT_xz='txz'
+
+ar-c-xz() {
+  tar -C $(dirname $1) -caf - $(basename $1) | xz -9 -c >$2
+}
+
+ar-u-xz() {
+  tar -axvf $1 --strip-components 1
+}
+
+ar-l-xz() {
+  tar -tf $1
+}
+
+rawpkg-create() {
+  local pkgdir=$1
+  [[ -d "${pkgdir}" ]] || msg-usage-exit 1 "Package directory not found: ${pkgdir}"
+  shift
+
+  local outfile=$(basename ${pkgdir}).$(ar-ext)
+
+  if [[ "x$1" == "x-o" ]]; then
+    outfile=$2
+    shift; shift
+  fi
+
+  [[ -n "$@" ]] && msg-usage-exit 1 "Undefined options: $@"
+
+  [[ -z "${outfile}" ]] && usage-exit 1
+  [[ -e "${outfile}" && ! -f "${outfile}" ]] && msg-exit 1 "Output file exists and not regular file: ${outfile}"
+
+  ar-c ${pkgdir} ${outfile} || msg-exit $? "Package ${outfile} creating failure."
+
+  echo "Package ${outfile} created successfully."
+}
+
+ensure-dir() {
+  mkdir -p $1 >/dev/null 2>&1 || msg-exit 1 "Can't create directory $1"
+}
+
+rawpkg-install() {
+  local pkgfilepath=$(realpath $1)
+  [[ -f "${pkgfilepath}" ]] || msg-usage-exit 1 "Package file path not found: ${pkgfilepath}"
+  shift
+
+  local pkgname=$(eval "echo \$(basename \${pkgfilepath%.$(ar-ext)})")
+
+  local rootdir=''
+
+  if [[ "x$1" == "x-d" ]]; then
+    rootdir=${2%/}
+    shift; shift
+  fi
+
+  [[ -d "${rootdir}" ]] || msg-usage-exit 1 "Root directory not found: ${rootdir}"
+
+  local dbdir=".rawpkg"
+
+  if [[ "x$1" == "x--db-dir" ]]; then
+    dbdir=${2%/}
+    shift; shift
+  else
+    echo "DB dir not specified explicitly, using default path: ${dbdir}"
+  fi
+
+  pushd ${rootdir} >/dev/null &&
+  (
+    set -e
+    tmpfiles=''
+
+    [[ -d "${dbdir}/pkgs/${pkgname}" ]] && msg-exit 1 "Package ${pkgname} already installed."
+
+    local pkgcontent=$(tempfile)
+    tmpfiles+=" ${pkgcontent}"
+    (
+      ar-l ${pkgfilepath} >${pkgcontent}
+      for f in $(cat ${pkgcontent}); do
+        f=$(eval "echo \${f#${pkgname}/}")
+        [[ -z ${f} ]] && continue
+        [[ -e "${f}" && ! -d "${f}" ]] && msg-exit 1 "Conflict: ${f} already exists in root directory!"
+      done
+
+      exit 0
+    )
+    local res=$?
+    (( "${res}" == 0 )) || msg-exit ${res}
+
+    ar-u ${pkgfilepath} | sed 's/^/* installed: /'
+
+    ensure-dir ${dbdir}/pkgs/${pkgname}
+
+    cat ${pkgcontent} | sed -e "s,^${pkgname}/,," | sed -e '/^$/d' >${dbdir}/pkgs/${pkgname}/list
+
+    do-clean
+  ) || msg-exit 1 "Installation failed."
+
+  popd >/dev/null
+
+  echo "Package ${pkgname} installed successfully."
+}
+
+rawpkg-uninstall() {
+  local pkgname=$1
+  shift
+
+  local rootdir=''
+
+  if [[ "x$1" == "x-d" ]]; then
+    rootdir=${2%/}
+    shift; shift
+  fi
+
+  [[ -d "${rootdir}" ]] || msg-usage-exit 1 "Root directory not found: ${rootdir}"
+
+  local dbdir=".rawpkg"
+
+  if [[ "x$1" == "x--db-dir" ]]; then
+    dbdir=${2%/}
+    shift; shift
+  else
+    echo "DB dir not specified explicitly, using default path: ${dbdir}"
+  fi
+
+  pushd ${rootdir} >/dev/null &&
+  (
+    set -e
+
+    local pkgdbdir="${dbdir}/pkgs/${pkgname}"
+
+    [[ -d "${pkgdbdir}" ]] || msg-usage-exit 1 "Package ${pkgname} not installed"
+
+    local pkgfiles=$(cat "${pkgdbdir}/list")
+    (
+      for f in $(echo "${pkgfiles}" | sed '1!G;h;$!d'); do
+        if [[ -d "${f}" ]]; then
+          rmdir ${f} >/dev/null 2>&1 && echo -e "* removed directory: \t ${f}"
+        else
+          rm -f ${f} >/dev/null && echo -e "* removed file: \t ${f}"
+        fi
+      done
+
+      rm -rf ${pkgdbdir}
+
+      exit 0
+    )
+    local res=$?
+    (( "${res}" == 0 )) || exit ${res}
+  ) || msg-exit 1 "Uninstallation failed."
+
+  popd >/dev/null
+
+  echo "Package ${pkgname} uinstalled successfully."
+}
+
+rawpkg-list() {
+  local rootdir=''
+
+  if [[ "x$1" == "x-d" ]]; then
+    rootdir=${2%/}
+    shift; shift
+  fi
+
+  [[ -d "${rootdir}" ]] || msg-usage-exit 1 "Root directory not found: ${rootdir}"
+
+  local dbdir=".rawpkg"
+
+  if [[ "x$1" == "x--db-dir" ]]; then
+    dbdir=${2%/}
+    shift; shift
+  else
+    echo "DB dir not specified explicitly, using default path: ${dbdir}"
+  fi
+
+  pushd ${rootdir} >/dev/null &&
+  (
+    set -e
+    [[ -d "${dbdir}/pkgs" ]] && ls "${dbdir}/pkgs/" | sed 's/^/* /'
+
+    exit 0
+  ) || msg-exit 1 "Installation failed."
+
+  popd >/dev/null
+}
+
+help-create() {
+  echo -e \
+"$0 create <distdir> [ -o <pkgfilename> ]"
+}
+
+help-install() {
+  echo -e \
+"$0 install <pkgfilepath> -d <rootdir> [ --db-dir <dbdir> ]"
+}
+
+help-uninstall() {
+  echo -e \
+"$0 uninstall <pkgname> -d <rootdir> [ --db-dir <dbdir> ]"
+}
+
+help-list() {
+  echo -e \
+"$0 list"
+}
+
+rawpkg-help() {
+  local cmd=$1
+
+  case "${cmd}" in
+    create|c) help-create; ;;
+    install|i) help-install; ;;
+    uninstall|remove|u) help-uninstall; ;;
+    list|l) help-list; ;;
+    *) usage; ;;
+  esac
+}
+
+cmd=$1
+shift
+
+case "${cmd}" in
+  create|c) rawpkg-create "$@"; ;;
+  install|i) rawpkg-install "$@"; ;;
+  uninstall|remove|u) rawpkg-uninstall "$@"; ;;
+  list|l) rawpkg-list "$@"; ;;
+  help|h) rawpkg-help "$@"; ;;
+  *) usage-exit 1; ;;
+esac
+
+do-clean
+
