@@ -13,11 +13,9 @@ do-clean() {
 }
 
 msg-exit() {
-  local err=$1
-  shift
-  echo -e "$@"
+  [[ -n $2 ]] && echo -e "$2"
   do-clean
-  exit "${err}"
+  exit "$1"
 }
 
 msg-usage-exit() {
@@ -87,7 +85,7 @@ rawpkg-create() {
   [[ -n "$@" ]] && msg-usage-exit 1 "Undefined options: $@"
 
   [[ -z "${outfile}" ]] && usage-exit 1
-  [[ -e "${outfile}" && ! -f "${outfile}" ]] && { echo "Output file exists and not regular file: ${outfile}"; return 1; }
+  [[ -e "${outfile}" && ! -f "${outfile}" ]] && msg-exit 1 "Output file exists and not regular file: ${outfile}"
 
   ar-c ${pkgdir} ${outfile} || msg-exit $? "Package ${outfile} creating failure."
 
@@ -197,10 +195,10 @@ rawpkg-list() {
   # pkgdbdir
   local pkgdbdir="${rootdir}/${dbdir}/pkgs/"
   
-  [[ -d "$pkgdbdir" ]] || return 1
+  [[ -d "$pkgdbdir" ]] || msg-exit 1
   
   local pkglist="$(ls $pkgdbdir)"
-  [[ -z  $pkglist ]] && return 1
+  [[ -z  $pkglist ]] && msg-exit 1
   
   # if template
   if [[ -n "$1" ]]; then
@@ -210,7 +208,6 @@ rawpkg-list() {
     echo $pkglist    
   fi
 
-  return 0
 }
 
 
@@ -300,8 +297,4 @@ case "${cmd}" in
   *) usage-exit 1; ;;
 esac
 
-errcode=$?
-
 do-clean
-
-exit $errcode
