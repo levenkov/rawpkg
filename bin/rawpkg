@@ -58,7 +58,7 @@ ar-l() {
   eval "ar-l-${AR} $@"
 }
 
-AREXT_xz='txz'
+AREXT_xz='rp'
 
 ar-c-xz() {
   tar -C $(dirname $1) -caf - $(basename $1) | xz -9 -c >$2
@@ -87,7 +87,7 @@ rawpkg-create() {
   [[ -n "$@" ]] && msg-usage-exit 1 "Undefined options: $@"
 
   [[ -z "${outfile}" ]] && usage-exit 1
-  [[ -e "${outfile}" && ! -f "${outfile}" ]] && msg-exit 1 "Output file exists and not regular file: ${outfile}"
+  [[ -e "${outfile}" && ! -f "${outfile}" ]] && { echo "Output file exists and not regular file: ${outfile}"; return 1; }
 
   ar-c ${pkgdir} ${outfile} || msg-exit $? "Package ${outfile} creating failure."
 
@@ -98,34 +98,63 @@ ensure-dir() {
   mkdir -p $1 >/dev/null 2>&1 || msg-exit 1 "Can't create directory $1"
 }
 
+# ----------------------------------------------
+# Default option arguments values
+#-----------------------------------------------
+rootdir='.'
+dbdir=".rawpkg"
+
+#-----------------------------------------------
+# Functions for parsing common option arguments: 
+# ----------------------------------------------
+
+# parse-root() for parsing [ -d root ] 
+parse-root()  {
+  local code=1
+  if [[ "$1" == "-d" ]]; then
+    rootdir=${2%/}
+    code=0
+  fi
+
+  [[ -d "${rootdir}" ]] || msg-usage-exit 1 "Root directory not found: ${rootdir}"
+  
+  return $code
+  
+}
+
+# parse-dbdir() for parsing [ --dbdir dbdir ]
+parse-dbdir() {
+  local code=1
+  if [[ "$1" == "--db-dir" ]]; then
+    dbdir=${2%/}
+    code=0
+  else
+    echo "DB dir not specified explicitly, using default path: ${dbdir}">&2
+  fi 
+  return $code 
+}
+
+#-----------------------------------------------
+# Script Functions:
+# ----------------------------------------------
+ 
+# install [ -d root ] [ --dbdir dbdir ] pkgfilepath
 rawpkg-install() {
+  
+  parse-root  $@ && { shift; shift; }
+  parse-dbdir $@ && { shift; shift; }
+  
+  #  pkgfilepath
   local pkgfilepath=$(realpath $1)
   [[ -f "${pkgfilepath}" ]] || msg-usage-exit 1 "Package file path not found: ${pkgfilepath}"
   shift
 
-  local pkgname=$(eval "echo \$(basename \${pkgfilepath%.$(ar-ext)})")
+  local pkgname=$(eval "echo \$(basename \${pkgfilepath%.\$(ar-ext)})")
 
-  local rootdir=''
-
-  if [[ "x$1" == "x-d" ]]; then
-    rootdir=${2%/}
-    shift; shift
-  fi
-
-  [[ -d "${rootdir}" ]] || msg-usage-exit 1 "Root directory not found: ${rootdir}"
-
-  local dbdir=".rawpkg"
-
-  if [[ "x$1" == "x--db-dir" ]]; then
-    dbdir=${2%/}
-    shift; shift
-  else
-    echo "DB dir not specified explicitly, using default path: ${dbdir}"
-  fi
-
+  
   pushd ${rootdir} >/dev/null &&
   (
-    set -e
+    set -e 
     tmpfiles=''
 
     [[ -d "${dbdir}/pkgs/${pkgname}" ]] && msg-exit 1 "Package ${pkgname} already installed."
@@ -145,7 +174,7 @@ rawpkg-install() {
     local res=$?
     (( "${res}" == 0 )) || msg-exit ${res}
 
-    ar-u ${pkgfilepath} | sed 's/^/* installed: /'
+    ar-u ${pkgfilepath} | sed -e 's,^[^\/]*\/,\/,'| sed 's/^/* installed: /'
 
     ensure-dir ${dbdir}/pkgs/${pkgname}
 
@@ -159,28 +188,42 @@ rawpkg-install() {
   echo "Package ${pkgname} installed successfully."
 }
 
+# list [ -d root ] [ --dbdir dbdir ] [ template ]
+rawpkg-list() {
+
+  parse-root  $@ && { shift; shift; }
+  parse-dbdir $@ && { shift; shift; }
+  
+  # pkgdbdir
+  local pkgdbdir="${rootdir}/${dbdir}/pkgs/"
+  
+  [[ -d "$pkgdbdir" ]] || return 1
+  
+  local pkglist="$(ls $pkgdbdir)"
+  [[ -z  $pkglist ]] && return 1
+  
+  # if template
+  if [[ -n "$1" ]]; then
+    local template="$1"
+    echo "$pkglist" | grep -E $template
+  else 
+    echo $pkglist    
+  fi
+
+  return 0
+}
+
+
+# uninstall [ -d root ] [ --dbdir dbdir ] pkgname
 rawpkg-uninstall() {
+  
+  parse-root  $@ && { shift; shift; }
+  parse-dbdir $@ && { shift; shift; }
+
+  # pkgname
   local pkgname=$1
   shift
-
-  local rootdir=''
-
-  if [[ "x$1" == "x-d" ]]; then
-    rootdir=${2%/}
-    shift; shift
-  fi
-
-  [[ -d "${rootdir}" ]] || msg-usage-exit 1 "Root directory not found: ${rootdir}"
-
-  local dbdir=".rawpkg"
-
-  if [[ "x$1" == "x--db-dir" ]]; then
-    dbdir=${2%/}
-    shift; shift
-  else
-    echo "DB dir not specified explicitly, using default path: ${dbdir}"
-  fi
-
+  
   pushd ${rootdir} >/dev/null &&
   (
     set -e
@@ -212,36 +255,6 @@ rawpkg-uninstall() {
   echo "Package ${pkgname} uinstalled successfully."
 }
 
-rawpkg-list() {
-  local rootdir=''
-
-  if [[ "x$1" == "x-d" ]]; then
-    rootdir=${2%/}
-    shift; shift
-  fi
-
-  [[ -d "${rootdir}" ]] || msg-usage-exit 1 "Root directory not found: ${rootdir}"
-
-  local dbdir=".rawpkg"
-
-  if [[ "x$1" == "x--db-dir" ]]; then
-    dbdir=${2%/}
-    shift; shift
-  else
-    echo "DB dir not specified explicitly, using default path: ${dbdir}"
-  fi
-
-  pushd ${rootdir} >/dev/null &&
-  (
-    set -e
-    [[ -d "${dbdir}/pkgs" ]] && ls "${dbdir}/pkgs/" | sed 's/^/* /'
-
-    exit 0
-  ) || msg-exit 1 "Installation failed."
-
-  popd >/dev/null
-}
-
 help-create() {
   echo -e \
 "$0 create <distdir> [ -o <pkgfilename> ]"
@@ -249,17 +262,17 @@ help-create() {
 
 help-install() {
   echo -e \
-"$0 install <pkgfilepath> -d <rootdir> [ --db-dir <dbdir> ]"
+"$0 install [ -d root ] [ --dbdir dbdir ] pkgfilepath"
 }
 
 help-uninstall() {
   echo -e \
-"$0 uninstall <pkgname> -d <rootdir> [ --db-dir <dbdir> ]"
+"$0 uninstall [ -d root ] [ --dbdir dbdir ] pkgname"
 }
 
 help-list() {
   echo -e \
-"$0 list"
+"$0 list [ -d root ] [ --dbdir dbdir ] [ template ]"
 }
 
 rawpkg-help() {
@@ -277,6 +290,7 @@ rawpkg-help() {
 cmd=$1
 shift
 
+
 case "${cmd}" in
   create|c) rawpkg-create "$@"; ;;
   install|i) rawpkg-install "$@"; ;;
@@ -286,5 +300,8 @@ case "${cmd}" in
   *) usage-exit 1; ;;
 esac
 
+errcode=$?
+
 do-clean
 
+exit $errcode
