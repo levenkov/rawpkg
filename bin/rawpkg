@@ -13,7 +13,7 @@ do-clean() {
 }
 
 msg-exit() {
-  [[ -n $2 ]] && echo -e "$2"
+  [[ -n $2 ]] && echo -e "$2" >&2
   do-clean
   exit "$1"
 }
@@ -192,21 +192,26 @@ rawpkg-list() {
   parse-root  $@ && { shift; shift; }
   parse-dbdir $@ && { shift; shift; }
   
-  # pkgdbdir
-  local pkgdbdir="${rootdir}/${dbdir}/pkgs/"
+  pushd $rootdir >/dev/null &&
+  (
+     # pkgdbdir
+     local pkgdbdir="${dbdir}/pkgs/"
   
-  [[ -d "$pkgdbdir" ]] || msg-exit 1
+     [[ -d "$pkgdbdir" ]] || msg-exit 1
   
-  local pkglist="$(ls $pkgdbdir)"
-  [[ -z  $pkglist ]] && msg-exit 1
+     local pkglist="$(ls $pkgdbdir)"
+     [[ -z  $pkglist ]] && msg-exit 1
   
-  # if template
-  if [[ -n "$1" ]]; then
-    local template="$1"
-    echo "$pkglist" | grep -E $template
-  else 
-    echo $pkglist    
-  fi
+     # if template
+     if [[ -n "$1" ]]; then
+       local template="$1"
+       echo "$pkglist" | grep -E $template
+     else 
+       echo $pkglist    
+     fi
+  )
+  
+  popd >/dev/null
 
 }
 
@@ -227,15 +232,15 @@ rawpkg-uninstall() {
 
     local pkgdbdir="${dbdir}/pkgs/${pkgname}"
 
-    [[ -d "${pkgdbdir}" ]] || msg-usage-exit 1 "Package ${pkgname} not installed"
+    [[ -d "${pkgdbdir}" ]] || msg-exit 1 "Package ${pkgname} not installed"
 
     local pkgfiles=$(cat "${pkgdbdir}/list")
     (
       for f in $(echo "${pkgfiles}" | sed '1!G;h;$!d'); do
         if [[ -d "${f}" ]]; then
-          rmdir ${f} >/dev/null 2>&1 && echo -e "* removed directory: \t ${f}"
+          rmdir ${f} >/dev/null 2>&1 && echo -e "* removed directory: \t /${f}"
         else
-          rm -f ${f} >/dev/null && echo -e "* removed file: \t ${f}"
+          rm -f ${f} >/dev/null && echo -e "* removed file: \t /${f}"
         fi
       done
 
